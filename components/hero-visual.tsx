@@ -1,61 +1,85 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+
+const HeroScene = dynamic(() => import("./three/hero-scene").then(module => module.HeroScene), { ssr: false });
+type Quality = "mobile" | "tablet" | "desktop";
+
+class SceneBoundary extends Component<{ children: ReactNode; onFailure: () => void }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch() { this.props.onFailure(); }
+  render() { return this.state.failed ? null : this.props.children; }
+}
+
+function StaticVortex() {
+  return <div className="static-vortex" aria-hidden="true">
+    <div className="static-vortex-ring" />
+    <div className="static-vortex-core" />
+    <span className="static-triangle static-triangle-a" />
+    <span className="static-triangle static-triangle-b" />
+    <span className="static-triangle static-triangle-c" />
+    <span className="static-triangle static-triangle-d" />
+    <span className="static-triangle static-triangle-e" />
+  </div>;
+}
 
 export function HeroVisual() {
   const root = useRef<HTMLDivElement>(null);
-  const video = useRef<HTMLVideoElement>(null);
-  const [playMotion, setPlayMotion] = useState(false);
+  const pointer = useRef({ x: 0, y: 0 });
+  const [supported, setSupported] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [active, setActive] = useState(true);
+  const [quality, setQuality] = useState<Quality>("desktop");
+
+  const fail = useCallback(() => { setSupported(false); setReady(false); }, []);
+  const markReady = useCallback(() => setReady(true), []);
 
   useEffect(() => {
     const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => setPlayMotion(!preference.matches);
+    const mobile = window.matchMedia("(max-width: 640px)");
+    const tablet = window.matchMedia("(max-width: 900px)");
+    const update = () => {
+      setQuality(mobile.matches ? "mobile" : tablet.matches ? "tablet" : "desktop");
+      if (preference.matches) { setSupported(false); setReady(false); return; }
+      try {
+        const test = document.createElement("canvas");
+        setSupported(Boolean(test.getContext("webgl2") || test.getContext("webgl")));
+      } catch { setSupported(false); }
+    };
     update();
-    preference.addEventListener("change", update);
-    return () => preference.removeEventListener("change", update);
+    [preference, mobile, tablet].forEach(query => query.addEventListener("change", update));
+    return () => [preference, mobile, tablet].forEach(query => query.removeEventListener("change", update));
   }, []);
 
   useEffect(() => {
-    if (!playMotion) return;
     const element = root.current;
-    const movie = video.current;
-    if (!element || !movie) return;
-    const canTrack = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
-    let frame = 0;
-    const move = (event: PointerEvent) => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const rect = element.getBoundingClientRect();
-        element.style.setProperty("--px", `${((event.clientX - rect.left) / rect.width - .5) * -10}px`);
-        element.style.setProperty("--py", `${((event.clientY - rect.top) / rect.height - .5) * -8}px`);
-      });
-    };
-    const reset = () => { element.style.setProperty("--px", "0px"); element.style.setProperty("--py", "0px"); };
-    const visibility = () => { if (document.hidden) movie.pause(); else movie.play().catch(() => {}); };
-    if (canTrack) { element.addEventListener("pointermove", move); element.addEventListener("pointerleave", reset); }
+    if (!element) return;
+    const observer = new IntersectionObserver(([entry]) => setActive(entry.isIntersecting && !document.hidden), { threshold: .01 });
+    const visibility = () => setActive(!document.hidden && element.getBoundingClientRect().bottom > 0);
+    observer.observe(element);
     document.addEventListener("visibilitychange", visibility);
-    visibility();
-    return () => {
-      cancelAnimationFrame(frame);
-      element.removeEventListener("pointermove", move);
-      element.removeEventListener("pointerleave", reset);
-      document.removeEventListener("visibilitychange", visibility);
-      movie.pause();
-    };
-  }, [playMotion]);
+    return () => { observer.disconnect(); document.removeEventListener("visibilitychange", visibility); };
+  }, []);
 
-  return <div className="hero-visual" ref={root} aria-hidden="true">
-    <div className="vortex-shell">
-      <div className="vortex-image" />
-      {playMotion && <video ref={video} className="vortex-video" autoPlay muted loop playsInline preload="metadata" poster="/assets/vortex-poster.jpg" disablePictureInPicture>
-        <source src="/video/hikma-hero.webm" type="video/webm" />
-        <source src="/video/hikma-hero.mp4" type="video/mp4" />
-      </video>}
-    </div>
+  useEffect(() => {
+    if (quality === "mobile" || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    const move = (event: PointerEvent) => {
+      pointer.current.x = (event.clientX / window.innerWidth - .5) * 2;
+      pointer.current.y = (.5 - event.clientY / window.innerHeight) * 2;
+    };
+    const reset = () => { pointer.current.x = 0; pointer.current.y = 0; };
+    window.addEventListener("pointermove", move, { passive: true });
+    window.addEventListener("blur", reset);
+    return () => { window.removeEventListener("pointermove", move); window.removeEventListener("blur", reset); };
+  }, [quality]);
+
+  return <div className={`hero-visual${ready ? " ready" : ""}`} ref={root} aria-hidden="true" data-renderer={ready ? "webgl" : "css"}>
+    <StaticVortex />
+    {supported && <SceneBoundary onFailure={fail}>
+      <HeroScene quality={quality} active={active} pointer={pointer} onReady={markReady} onFailure={fail} />
+    </SceneBoundary>}
     <div className="visual-haze" />
-    <div className="triangle triangle-a" /><div className="triangle triangle-b" /><div className="triangle triangle-c" />
-    <div className="triangle triangle-d" /><div className="triangle triangle-e" /><div className="triangle triangle-f" />
-    <div className="triangle triangle-g" /><div className="triangle triangle-h" />
-    <span className="orb orb-a" /><span className="orb orb-b" /><span className="orb orb-c" />
   </div>;
 }
